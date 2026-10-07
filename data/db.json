@@ -27603,5 +27603,9 @@
       "remark": ""
     }
   ],
-  "findings": []
+  "findings": [],
+  "caliberVersions": [],
+  "maskingRules": [],
+  "maskingRuleChanges": [],
+  "releaseBatches": []
 }

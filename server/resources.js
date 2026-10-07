@@ -251,13 +251,16 @@ function listReadings(data, query) {
 function decorateReading(data, row) {
   const device = monitor.deviceOf(data, row.deviceId);
   const outlet = monitor.outletOf(data, row.outletId);
+  const oxygen = monitor.oxygenAt(data, row);
+  const counted = monitor.isCounted(row, device, data.settings) && !monitor.isStopped(data, row);
   return Object.assign({}, row, {
     deviceCode: device ? device.code : '',
     deviceStatus: device ? device.status : '',
     outletCode: outlet ? outlet.code : '',
-    counted: monitor.isCounted(row, device, data.settings),
-    concentration: monitor.effectiveConcentration(row, data.settings),
-    oxygen: monitor.oxygenAt(data, row),
+    counted,
+    excludedReason: counted ? '' : monitor.excludedReason(data, row),
+    concentration: counted ? monitor.effectiveConcentration(row, data.settings, oxygen) : 0,
+    oxygen,
     flow: monitor.flowAt(data, row),
   });
 }

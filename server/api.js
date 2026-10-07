@@ -1,8 +1,12 @@
 const express = require('express');
+const path = require('path');
 const store = require('./store');
 const { AppError } = require('./errors');
 const res = require('./resources');
 const monitor = require('./monitor');
+const caliber = require('./caliber');
+const masking = require('./masking');
+const releases = require('./releases');
 
 const router = express.Router();
 
@@ -128,6 +132,46 @@ router.get('/reports', withData((data, req) => res.listReports(data, req.query))
 router.post('/reports', withData((data, req) => ({ __save: true, __body: res.createReport(data, req.body || {}) })));
 router.get('/reports/:id', withData((data, req) => res.reportDetail(data, req.params.id)));
 router.patch('/reports/:id', withData((data, req) => ({ __save: true, __body: res.updateReport(data, req.params.id, req.body || {}) })));
+
+/* ================= 对外提供链路：口径版本、脱敏规则、提供批次 ================= */
+router.get('/caliber/current', withData((data) => caliber.previewSnapshot(data)));
+
+router.get('/masking-rules', withData((data) => {
+  const history = (data.maskingRules || []).map((r) => masking.publicRuleView(r));
+  return {
+    current: history.length ? history[history.length - 1] : null,
+    history,
+    fieldDefs: masking.FIELD_DEFS.map((d) => ({ entity: d.entity, field: d.field, label: d.label, defaultAction: d.action, aliasPrefix: d.aliasPrefix || '' })),
+    actions: masking.ACTIONS.map((a) => ({ action: a, actionText: masking.ACTION_TEXT[a] })),
+  };
+}));
+router.patch('/masking-rules', withData((data, req) => ({ __save: true, __body: masking.updateRules(data, req.body || {}) })));
+router.get('/masking-rule-changes', withData((data) => ({ changes: data.maskingRuleChanges || [] })));
+
+router.post('/releases/preview', withData((data, req) => releases.preview(data, req.body || {})));
+router.post('/releases', withData((data, req) => ({ __save: true, __body: releases.createRelease(data, req.body || {}) })));
+router.get('/releases', withData((data, req) => ({ batches: releases.listBatches(data, req.query) })));
+router.get('/releases/:id', withData((data, req) => releases.packageDetail(data, req.params.id)));
+router.get('/releases/:id/download', (req, reqRes, next) => {
+  try {
+    const data = store.load();
+    const batch = releases.getBatch(data, req.params.id);
+    const dir = releases.batchDir(batch);
+    const fileMap = {
+      package: ['release-package.json', 'application/json; charset=utf-8'],
+      csv: ['data.csv', 'text/csv; charset=utf-8'],
+      note: ['口径说明.txt', 'text/plain; charset=utf-8'],
+      internal: ['internal-align.json', 'application/json; charset=utf-8'],
+    };
+    const key = req.query.file || 'package';
+    if (!fileMap[key]) throw new AppError(400, 'RELEASE_FILE_INVALID', 'file 只能是 package、csv、note、internal');
+    reqRes.download(path.join(dir, fileMap[key][0]), fileMap[key][0], { headers: { 'Content-Type': fileMap[key][1] } }, (err) => {
+      if (err) next(new AppError(410, 'RELEASE_FILE_MISSING', '数据包文件缺失：' + batch.releaseNo));
+    });
+  } catch (err) { next(err); }
+});
+router.post('/releases/:id/verify', withData((data, req) => releases.verify(data, req.params.id)));
+router.post('/releases/:id/align', withData((data, req) => releases.alignLookup(data, req.params.id, (req.body || {}).aliases)));
 
 router.use((req, r, next) => next(new AppError(404, 'NOT_FOUND', '这个地址没有对应功能：' + req.method + ' ' + req.originalUrl)));
 
