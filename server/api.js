@@ -3,6 +3,7 @@ const store = require('./store');
 const { AppError } = require('./errors');
 const res = require('./resources');
 const monitor = require('./monitor');
+const share = require('./share');
 
 const router = express.Router();
 
@@ -12,6 +13,9 @@ function withData(handler) {
       const data = store.load();
       const result = handler(data, req);
       if (result && result.__save === true) store.save(data);
+      if (result && result.__headers) {
+        for (const key of Object.keys(result.__headers)) reqRes.set(key, result.__headers[key]);
+      }
       if (result && typeof result === 'object' && '__body' in result) reqRes.json(result.__body);
       else reqRes.json(result);
     } catch (err) {
@@ -128,6 +132,16 @@ router.get('/reports', withData((data, req) => res.listReports(data, req.query))
 router.post('/reports', withData((data, req) => ({ __save: true, __body: res.createReport(data, req.body || {}) })));
 router.get('/reports/:id', withData((data, req) => res.reportDetail(data, req.params.id)));
 router.patch('/reports/:id', withData((data, req) => ({ __save: true, __body: res.updateReport(data, req.params.id, req.body || {}) })));
+
+router.get('/share/catalog', withData((data) => share.catalog(data)));
+router.post('/share/preview', withData((data, req) => share.preview(data, req.body || {})));
+router.get('/share/batches', withData((data) => share.listBatches(data)));
+router.post('/share/batches', withData((data, req) => ({ __save: true, __body: share.createBatch(data, req.body || {}) })));
+router.get('/share/batches/:id', withData((data, req) => share.batchDetail(data, req.params.id)));
+router.get('/share/batches/:id/file', withData((data, req) => share.batchFile(data, req.params.id)));
+router.post('/share/batches/:id/verify', withData((data, req) => share.verifyBatch(data, req.params.id)));
+router.get('/share/mask-rules', withData((data) => share.listMaskRules(data)));
+router.post('/share/mask-rules', withData((data, req) => ({ __save: true, __body: share.createMaskRule(data, req.body || {}) })));
 
 router.use((req, r, next) => next(new AppError(404, 'NOT_FOUND', '这个地址没有对应功能：' + req.method + ' ' + req.originalUrl)));
 

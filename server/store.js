@@ -25,6 +25,11 @@ function normalize(raw) {
   for (const key of ['plants', 'outlets', 'devices', 'readings', 'reports']) {
     if (!Array.isArray(data[key])) data[key] = [];
   }
+  // 对外提供链路：脱敏规则版本、导出批次、口径留痕
+  if (!data.share || typeof data.share !== 'object') data.share = {};
+  for (const key of ['maskRules', 'batches', 'caliberLog']) {
+    if (!Array.isArray(data.share[key])) data.share[key] = [];
+  }
   return data;
 }
 

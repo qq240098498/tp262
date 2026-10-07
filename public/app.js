@@ -30,7 +30,20 @@
     outletsFilter: { plantId: '', status: '' },
     devicesFilter: { outletId: '', metric: '', status: '' },
     readingsFilter: { outletId: '', deviceId: '', metric: '', day: '', month: '' },
-    accounting: { outletId: '', month: '', metric: 'COD' }
+    accounting: { outletId: '', month: '', metric: 'COD' },
+    share: {
+      catalog: null,
+      outlets: {},
+      metrics: { COD: true, '氨氮': true, '流量': false, '氧含量': false },
+      from: '', to: '', operator: '',
+      preview: null,
+      batches: [],
+      caliberLog: [],
+      mask: null,
+      maskDraft: null,
+      maskNote: '', maskOperator: '',
+      verify: {}
+    }
   };
 
   /* ================= 基础工具 ================= */
@@ -112,11 +125,11 @@
     return { metric: name };
   }
 
-  /* 折算后浓度（页面自算）：实测 × (21 − 基准氧) / (21 − 实测氧含量)，氧含量缺失按 0 代入 */
+  /* 折算后浓度（页面自算）：实测 × (21 − 基准氧) / (21 − 实测氧含量)，氧含量缺失按基准氧处理 */
   function pageConcentration(row) {
     var base = (state.settings && state.settings.oxygenBaseline !== null && state.settings.oxygenBaseline !== undefined)
       ? Number(state.settings.oxygenBaseline) : 8;
-    var oxy = (row.oxygen === null || row.oxygen === undefined || row.oxygen === '') ? 0 : Number(row.oxygen);
+    var oxy = (row.oxygen === null || row.oxygen === undefined || row.oxygen === '') ? base : Number(row.oxygen);
     var denom = 21 - oxy;
     if (!isFinite(denom) || denom === 0) return null;
     var value = Number(row.value);
@@ -347,6 +360,7 @@
     else if (view === 'devices') renderDevices();
     else if (view === 'readings') renderReadings();
     else if (view === 'accounting') renderAccounting();
+    else if (view === 'share') renderShare();
   }
 
   /* ================= 概览 ================= */
@@ -757,7 +771,7 @@
       h('td', {}, h('span', { class: 'tag ' + (r.flag === '有效' ? 'tag-ok' : 'tag-danger'), text: r.flag })),
       h('td', { text: r.source }),
       h('td', { text: textOf(r.operator) }),
-      h('td', {}, h('span', { class: 'tag ' + (r.counted ? 'tag-ok' : 'tag-danger'), text: r.counted ? '计入' : '不计入' })),
+      h('td', {}, h('span', { class: 'tag ' + (r.counted ? 'tag-ok' : 'tag-danger'), text: r.counted ? '计入' : (r.stopped ? '不计入（停产/停用）' : '不计入') })),
       h('td', { class: 'mono cell-page-conc', dataset: { value: pc === null ? '' : String(pc) }, text: pc === null ? '—' : fmt(pc, 2) }),
       h('td', { class: 'mono cell-api-conc', dataset: { value: (r.concentration === null || r.concentration === undefined) ? '' : String(r.concentration) }, text: textOf(r.concentration) }),
       h('td', { class: 'mono', text: textOf(r.oxygen) }),
@@ -830,7 +844,7 @@
           '共 ', h('b', { text: String(data.total) }), ' 条，已显示前 ', h('b', { text: String(data.returned) }), ' 条（总条数与已显示条数取自接口 total 与 returned）。'
         ]),
         h('div', { class: 'section-note' }, [
-          '「折算后浓度（页面自算）」由本页按 实测 × (21 − 基准氧) / (21 − 氧含量) 计算，氧含量取接口 oxygen，缺失按 0 代入；「接口折算浓度」直接显示接口 concentration。'
+          '「折算后浓度（页面自算）」由本页按 实测 × (21 − 基准氧) / (21 − 氧含量) 计算，氧含量取接口 oxygen，缺失按基准氧处理；「接口折算浓度」直接显示接口 concentration。'
         ]),
         h('div', { class: 'table-wrap' }, h('table', { id: 'tableReadings' }, [
           h('thead', {}, h('tr', {}, [
@@ -931,7 +945,7 @@
         h('td', {}, statusTag(r.deviceStatus, '正常')),
         h('td', { class: 'mono', text: textOf(r.oxygen) }),
         h('td', { class: 'mono', text: textOf(r.flow) }),
-        h('td', { text: r.counted ? '计入' : '不计入' }),
+        h('td', { text: r.counted ? '计入' : (r.stopped ? '不计入（停产/停用）' : '不计入') }),
         h('td', { class: 'mono', text: textOf(r.concentration) })
       ]));
     });
@@ -952,8 +966,11 @@
       h('td', { class: 'mono', text: textOf(d.imputedHours) }),
       h('td', { class: 'mono', text: fmt(d.average) }),
       h('td', { class: 'mono', text: textOf(d.limit) }),
-      h('td', {}, h('span', { class: 'tag ' + (d.exceed ? 'tag-danger' : 'tag-ok'), text: d.exceed ? '超标' : '达标' })),
-      h('td', { class: 'mono', text: fmt(d.flowTotal, 1) })
+      h('td', {}, d.valid
+        ? h('span', { class: 'tag ' + (d.exceed ? 'tag-danger' : 'tag-ok'), text: d.exceed ? '超标' : '达标' })
+        : h('span', { class: 'tag tag-warn', text: '不计入' })),
+      h('td', { class: 'mono', text: fmt(d.flowTotal, 1) }),
+      h('td', { class: 'sub', text: d.invalidReason || '' })
     ], function () {
       var wrap = h('div');
       wrap.appendChild(h('div', { class: 'section-note', text: d.day + ' · ' + metric + ' 逐小时明细（共 ' + ((d.rows || []).length) + ' 小时）' }));
@@ -1013,14 +1030,17 @@
               h('td', { class: 'nowrap', text: d.day }), h('td', { class: 'mono', text: textOf(d.countedHours) }),
               h('td', { class: 'mono', text: textOf(d.imputedHours) }), h('td', { class: 'mono', text: fmt(d.average) }),
               h('td', { class: 'mono', text: textOf(d.limit) }),
-              h('td', {}, h('span', { class: 'tag ' + (d.exceed ? 'tag-danger' : 'tag-ok'), text: d.exceed ? '超标' : '达标' })),
-              h('td', { class: 'mono', text: fmt(d.flowTotal, 1) })
+              h('td', {}, d.valid
+                ? h('span', { class: 'tag ' + (d.exceed ? 'tag-danger' : 'tag-ok'), text: d.exceed ? '超标' : '达标' })
+                : h('span', { class: 'tag tag-warn', text: '不计入' })),
+              h('td', { class: 'mono', text: fmt(d.flowTotal, 1) }),
+              h('td', { class: 'sub', text: d.invalidReason || '' })
             ]));
           });
           holder.appendChild(h('div', { class: 'table-wrap' }, h('table', { class: 'mini-table' }, [
             h('thead', {}, h('tr', {}, [
               h('th', { text: '日期' }), h('th', { text: '有效小时数' }), h('th', { text: '补录小时数' }),
-              h('th', { text: '日均' }), h('th', { text: '限值' }), h('th', { text: '是否超标' }), h('th', { text: '当日流量合计' })
+              h('th', { text: '日均' }), h('th', { text: '限值' }), h('th', { text: '是否超标' }), h('th', { text: '当日流量合计' }), h('th', { text: '说明' })
             ])),
             tb
           ])));
@@ -1145,7 +1165,7 @@
       h('div', { class: 'table-wrap' }, h('table', { id: 'tableDaily' }, [
         h('thead', {}, h('tr', {}, [
           h('th', { text: '日期' }), h('th', { text: '有效小时数' }), h('th', { text: '补录小时数' }), h('th', { text: '日均' }),
-          h('th', { text: '限值' }), h('th', { text: '是否超标' }), h('th', { text: '当日流量合计' })
+          h('th', { text: '限值' }), h('th', { text: '是否超标' }), h('th', { text: '当日流量合计' }), h('th', { text: '说明' })
         ])),
         dailyTb
       ]))
@@ -1167,6 +1187,351 @@
           h('th', { text: '备注' }), h('th', { text: '操作' })
         ])),
         reportTb
+      ]))
+    ]));
+  }
+
+  /* ================= 对外提供 ================= */
+  function checkItem(label, checked, onChange) {
+    var input = h('input', { type: 'checkbox' });
+    input.checked = !!checked;
+    input.addEventListener('change', function () { onChange(input.checked); });
+    return h('label', { class: 'check-item' }, [input, h('span', { text: label })]);
+  }
+
+  function kvList(pairs) {
+    var dl = h('dl', { class: 'kv-list' });
+    pairs.forEach(function (p) {
+      dl.appendChild(h('dt', { text: p[0] }));
+      dl.appendChild(h('dd', { text: p[1] }));
+    });
+    return dl;
+  }
+
+  function scopeText(scope) {
+    return (scope.outletCodes || []).join('、') + ' · ' + (scope.metrics || []).join('、')
+      + ' · ' + (scope.from || '不限') + ' 至 ' + (scope.to || '不限');
+  }
+
+  function shareScopePayload() {
+    return {
+      outletIds: Object.keys(state.share.outlets).filter(function (id) { return state.share.outlets[id]; }),
+      metrics: Object.keys(state.share.metrics).filter(function (m) { return state.share.metrics[m]; }),
+      from: state.share.from.trim(),
+      to: state.share.to.trim()
+    };
+  }
+
+  function verifyResultNode(v) {
+    var box = h('div');
+    box.appendChild(h('div', { class: 'verify-box' + (v.consistent ? '' : ' is-bad') }, [
+      h('div', {}, [
+        h('b', { text: v.consistent ? '一致性校验通过：' : '一致性校验不通过：' }),
+        '按批次冻结的范围与脱敏规则版本重新生成，条数 ' + v.rowCountNow + '/' + v.rowCount + '，校验值 ' + (v.checksumNow === v.checksum ? '一致' : '不一致')
+      ]),
+      h('div', { class: 'mono', text: '批次校验值 ' + v.checksum.slice(0, 16) + '… / 重算 ' + v.checksumNow.slice(0, 16) + '…' })
+    ]));
+    box.appendChild(h('div', { class: 'verify-box' + (v.caliberChanged ? ' is-warn' : '') }, [
+      '口径版本：批次 ' + v.caliberVersion + ' / 当前 ' + v.caliberVersionNow + (v.caliberChanged ? '（口径已变化，重算结果可能与批次不同）' : '（一致）'),
+      '；脱敏规则版本：批次 ' + v.maskVersion + ' / 当前 ' + v.maskVersionNow
+    ]));
+    var a = v.alignment || {};
+    var alignBox = h('div', { class: 'verify-box' + ((a.missing || (a.drifted || []).length) ? ' is-bad' : '') }, [
+      h('b', { text: '与内部口径对齐核查：' }),
+      '共 ' + a.total + ' 行，对齐 ' + a.aligned + ' 行，内部找不到 ' + a.missing + ' 行，有出入 ' + (a.drifted || []).length + ' 行'
+    ]);
+    if ((a.drifted || []).length) {
+      var ul = h('ul');
+      a.drifted.forEach(function (d) { ul.appendChild(h('li', { text: (d['行'] || '') + '：' + (d['问题'] || '') })); });
+      alignBox.appendChild(ul);
+    }
+    box.appendChild(alignBox);
+    return box;
+  }
+
+  function batchDetailNode(id) {
+    return api('GET', '/api/share/batches/' + id).then(function (d) {
+      var box = h('div');
+      box.appendChild(h('div', { class: 'detail-block' }, [
+        h('h3', { text: '批次要素' }),
+        kvList([
+          ['批次号', d.id],
+          ['导出时刻', d.createdAt],
+          ['操作人', d.operator],
+          ['范围', scopeText(d.scope)],
+          ['口径版本', d.caliberVersion],
+          ['脱敏规则版本', d.maskVersion],
+          ['数据条数', String(d.rowCount)],
+          ['校验值', d.checksum]
+        ])
+      ]));
+      var caliberPairs = Object.keys(d.caliberSnapshot || {}).map(function (k) { return [k, d.caliberSnapshot[k]]; });
+      caliberPairs.push(['脱敏说明', d.maskDescription || '']);
+      box.appendChild(h('div', { class: 'detail-block' }, [
+        h('h3', { text: '口径说明快照（随数据一起给出的内容）' }),
+        kvList(caliberPairs)
+      ]));
+      var mappingBlocks = h('div');
+      [['单位编号映射', (d.mapping || {}).plants], ['设备编号映射', (d.mapping || {}).devices]].forEach(function (pair) {
+        var entries = Object.keys(pair[1] || {});
+        var tb = h('tbody');
+        entries.forEach(function (k) {
+          tb.appendChild(h('tr', { class: 'row' }, [h('td', { text: k }), h('td', { class: 'mono', text: pair[1][k] })]));
+        });
+        mappingBlocks.appendChild(h('div', { class: 'detail-block' }, [
+          h('h3', { text: pair[0] + '（' + entries.length + '）' }),
+          entries.length
+            ? h('table', { class: 'mini-table' }, [h('thead', {}, h('tr', {}, [h('th', { text: '内部编号' }), h('th', { text: '对外别名' })])), tb])
+            : h('div', { class: 'empty', text: '该规则下此字段不替换' })
+        ]));
+      });
+      mappingBlocks.appendChild(h('div', { class: 'detail-block' }, [
+        h('h3', { text: '数据编号映射' }),
+        h('div', { text: '共 ' + Object.keys((d.mapping || {}).readings || {}).length + ' 条（逐条映射留档，用于与内部数据对齐核查）' })
+      ]));
+      var wrap = h('div');
+      wrap.appendChild(h('div', { class: 'section-note', text: '以下为内部留档，不随文件对外。' }));
+      wrap.appendChild(mappingBlocks);
+      box.appendChild(wrap);
+      return box;
+    });
+  }
+
+  function batchRow(b) {
+    var actions = actionsCell([
+      actionBtn('下载文件', function () { window.open('/api/share/batches/' + b.id + '/file', '_blank'); }),
+      actionBtn('二次校验', function () {
+        api('POST', '/api/share/batches/' + b.id + '/verify').then(function (v) {
+          openModal('二次校验 · ' + b.id, verifyResultNode(v), [
+            h('button', { type: 'button', class: 'btn btn-ghost', text: '关闭', onclick: closeModal })
+          ]);
+        }).catch(showError);
+      })
+    ]);
+    return expandableRow([
+      h('td', {}, h('b', { text: b.id })),
+      h('td', { class: 'nowrap', text: b.createdAt }),
+      h('td', { text: b.operator }),
+      h('td', { text: scopeText(b.scope) }),
+      h('td', { class: 'mono', text: b.caliberVersion }),
+      h('td', { class: 'mono', text: b.maskVersion }),
+      h('td', { class: 'mono', text: String(b.rowCount) }),
+      h('td', { class: 'mono', text: b.checksum.slice(0, 12) + '…', title: b.checksum }),
+      actions
+    ], function () { return batchDetailNode(b.id); });
+  }
+
+  async function renderShare() {
+    var f = clear(document.getElementById('filters-share'));
+    f.appendChild(h('div', { class: 'filter-box' }, [
+      h('div', { class: 'filter-title', text: '对外提供' }),
+      h('p', { class: 'hint', text: '公开清单选定范围后生成导出批次；口径说明与脱敏说明随数据一起给出；每次提供生成批次记录，可下载文件、可二次校验。' })
+    ]));
+
+    var c = clear(document.getElementById('content-share'));
+    var catalog, batchesRes, mask;
+    try {
+      var out = await Promise.all([
+        api('GET', '/api/share/catalog'),
+        api('GET', '/api/share/batches'),
+        api('GET', '/api/share/mask-rules')
+      ]);
+      catalog = out[0]; batchesRes = out[1]; mask = out[2];
+    } catch (e) { showError(e); c.appendChild(h('div', { class: 'empty', text: '加载失败：' + e.message })); return; }
+    state.share.catalog = catalog;
+    state.share.batches = batchesRes.batches || [];
+    state.share.caliberLog = batchesRes.caliberLog || [];
+    state.share.mask = mask;
+    if (!Object.keys(state.share.outlets).length) {
+      (catalog.outlets || []).forEach(function (o) { state.share.outlets[o.id] = true; });
+    }
+    if (!state.share.maskDraft) {
+      var cur = (mask.rules || []).filter(function (r) { return r.maskVersion === mask.current; })[0];
+      state.share.maskDraft = cur ? Object.assign({}, cur.rules) : {};
+    }
+
+    /* ---- 公开清单 ---- */
+    var outletChecks = h('div', { class: 'check-grid' });
+    (catalog.outlets || []).forEach(function (o) {
+      outletChecks.appendChild(checkItem(o.code + ' ' + o.name + (o.status !== '运行' ? '（' + o.status + '）' : ''), state.share.outlets[o.id], function (v) {
+        state.share.outlets[o.id] = v;
+      }));
+    });
+    var metricChecks = h('div', { class: 'check-grid' });
+    (catalog.metrics || []).forEach(function (m) {
+      metricChecks.appendChild(checkItem(m, state.share.metrics[m], function (v) { state.share.metrics[m] = v; }));
+    });
+    var fromInput = h('input', { type: 'text', placeholder: '如 2026-09-01 或 2026-09-01 08:00:00' });
+    fromInput.value = state.share.from;
+    fromInput.addEventListener('change', function () { state.share.from = fromInput.value; });
+    var toInput = h('input', { type: 'text', placeholder: '如 2026-09-30 或 2026-09-30 23:00:00' });
+    toInput.value = state.share.to;
+    toInput.addEventListener('change', function () { state.share.to = toInput.value; });
+    var operatorInput = h('input', { type: 'text', placeholder: '批次要落到人' });
+    operatorInput.value = state.share.operator;
+    operatorInput.addEventListener('change', function () { state.share.operator = operatorInput.value; });
+
+    var previewLine = h('div', { class: 'section-note' }, [
+      '当前口径版本 ', h('b', { text: catalog.caliberVersion }), '，脱敏规则版本 ', h('b', { text: catalog.maskVersion }),
+      '；数据时刻范围 ' + (catalog.timeBounds.min || '—') + ' 至 ' + (catalog.timeBounds.max || '—') + '。'
+    ]);
+    if (state.share.preview) {
+      var p = state.share.preview;
+      previewLine.appendChild(h('div', {}, [
+        '预览：范围内 ', h('b', { text: String(p.rowCount) }), ' 条，校验值 ', h('span', { class: 'mono', text: p.checksum.slice(0, 16) + '…' }),
+        '（口径 ' + p.caliberVersion + ' / 脱敏 ' + p.maskVersion + '）'
+      ]));
+    }
+
+    var previewBtn = h('button', {
+      type: 'button', class: 'btn btn-sm btn-ghost', text: '预览范围',
+      onclick: function () {
+        state.share.from = fromInput.value; state.share.to = toInput.value;
+        api('POST', '/api/share/preview', shareScopePayload()).then(function (p) {
+          state.share.preview = p;
+          renderShare();
+        }).catch(showError);
+      }
+    });
+    var createBtn = h('button', {
+      type: 'button', class: 'btn btn-sm btn-accent', text: '生成导出批次',
+      onclick: function () {
+        state.share.from = fromInput.value; state.share.to = toInput.value; state.share.operator = operatorInput.value;
+        var payload = shareScopePayload();
+        payload.operator = state.share.operator.trim();
+        api('POST', '/api/share/batches', payload).then(function (b) {
+          state.share.preview = null;
+          toast('批次 ' + b.id + ' 已生成（' + b.rowCount + ' 条）');
+          renderShare();
+        }).catch(showError);
+      }
+    });
+
+    c.appendChild(h('div', { class: 'card' }, [
+      h('div', { class: 'card-head' }, [
+        h('h2', { text: '公开清单（选择对外提供的范围）' }),
+        h('span', { class: 'sub', text: '口径说明与脱敏说明会随数据一起写进导出文件' })
+      ]),
+      h('div', { class: 'card-body' }, [
+        h('div', { class: 'field' }, [h('label', { text: '排放口' }), outletChecks]),
+        h('div', { class: 'field' }, [h('label', { text: '指标' }), metricChecks]),
+        h('div', { class: 'form-grid' }, [
+          h('div', { class: 'field' }, [h('label', { text: '开始时刻（留空不限）' }), fromInput]),
+          h('div', { class: 'field' }, [h('label', { text: '结束时刻（留空不限）' }), toInput]),
+          h('div', { class: 'field' }, [h('label', { text: '操作人' }), operatorInput])
+        ]),
+        h('div', { class: 'btn-row' }, [previewBtn, createBtn]),
+        previewLine
+      ])
+    ]));
+
+    /* ---- 批次记录 ---- */
+    var batchTb = h('tbody');
+    state.share.batches.forEach(function (b) { batchTb.appendChild(batchRow(b)); });
+    var batchCard = h('div', { class: 'card' }, [
+      h('div', { class: 'card-head' }, [
+        h('h2', { text: '批次记录' }),
+        h('span', { class: 'sub', text: '共 ' + state.share.batches.length + ' 批（点行展开口径快照与内部对齐映射）' })
+      ]),
+      state.share.batches.length
+        ? h('div', { class: 'table-wrap' }, h('table', { id: 'tableShareBatches' }, [
+            h('thead', {}, h('tr', {}, [
+              h('th', { text: '批次号' }), h('th', { text: '导出时刻' }), h('th', { text: '操作人' }), h('th', { text: '范围' }),
+              h('th', { text: '口径版本' }), h('th', { text: '脱敏版本' }), h('th', { text: '数据条数' }), h('th', { text: '校验值' }), h('th', { text: '操作' })
+            ])),
+            batchTb
+          ]))
+        : h('div', { class: 'empty', text: '还没有对外提供过数据' })
+    ]);
+    if (state.share.caliberLog.length) {
+      var logTb = h('tbody');
+      state.share.caliberLog.forEach(function (l) {
+        logTb.appendChild(h('tr', { class: 'row' }, [
+          h('td', { class: 'mono', text: l.version }),
+          h('td', { class: 'nowrap', text: l.firstUsedAt }),
+          h('td', { text: '基准氧 ' + l.settings.oxygenBaseline + ' · 量程 ' + l.settings.rangeMin + '-' + l.settings.rangeMax
+            + ' · 限值 COD ' + l.settings.codDailyLimit + '/氨氮 ' + l.settings.ammoniaDailyLimit
+            + ' · 补录上限 ' + l.settings.maxImputeHoursPerDay + 'h' })
+        ]));
+      });
+      batchCard.appendChild(h('div', { class: 'card-body' }, [
+        h('h3', { text: '口径版本留痕（每版口径首次对外使用的时刻与设置）' }),
+        h('table', { class: 'mini-table' }, [
+          h('thead', {}, h('tr', {}, [h('th', { text: '口径版本' }), h('th', { text: '首次使用时刻' }), h('th', { text: '当时设置摘要' })])),
+          logTb
+        ])
+      ]));
+    }
+    c.appendChild(batchCard);
+
+    /* ---- 脱敏规则 ---- */
+    var maskForm = h('div', { class: 'form-grid' });
+    (mask.fields || []).forEach(function (fd) {
+      var select = h('select', { dataset: { field: 'mask_' + fd.field } });
+      (mask.actions || []).forEach(function (a) {
+        select.appendChild(h('option', { value: a.action, text: a.label + '（' + a.action + '）' }));
+      });
+      select.value = state.share.maskDraft[fd.field] || 'drop';
+      select.addEventListener('change', function () { state.share.maskDraft[fd.field] = select.value; });
+      maskForm.appendChild(h('div', { class: 'field' }, [h('label', { text: fd.label }), select]));
+    });
+    var maskNoteInput = h('input', { type: 'text', placeholder: '为什么改规则，留一句话' });
+    maskNoteInput.value = state.share.maskNote;
+    maskNoteInput.addEventListener('change', function () { state.share.maskNote = maskNoteInput.value; });
+    var maskOpInput = h('input', { type: 'text', placeholder: '规则改动要留痕到人' });
+    maskOpInput.value = state.share.maskOperator;
+    maskOpInput.addEventListener('change', function () { state.share.maskOperator = maskOpInput.value; });
+    maskForm.appendChild(h('div', { class: 'field' }, [h('label', { text: '改动说明' }), maskNoteInput]));
+    maskForm.appendChild(h('div', { class: 'field' }, [h('label', { text: '操作人' }), maskOpInput]));
+
+    var saveMaskBtn = h('button', {
+      type: 'button', class: 'btn btn-sm btn-accent', text: '保存为新版本',
+      onclick: function () {
+        state.share.maskNote = maskNoteInput.value; state.share.maskOperator = maskOpInput.value;
+        api('POST', '/api/share/mask-rules', {
+          rules: state.share.maskDraft,
+          note: state.share.maskNote.trim(),
+          createdBy: state.share.maskOperator.trim()
+        }).then(function (r) {
+          state.share.maskDraft = null;
+          toast('脱敏规则已保存为 ' + r.maskVersion);
+          renderShare();
+        }).catch(showError);
+      }
+    });
+
+    var maskHistoryTb = h('tbody');
+    (mask.rules || []).forEach(function (r) {
+      var ruleText = (mask.fields || []).map(function (fd) {
+        var act = (mask.actions || []).filter(function (a) { return a.action === r.rules[fd.field]; })[0];
+        return fd.label + '·' + (act ? act.label : r.rules[fd.field]);
+      }).join('、');
+      maskHistoryTb.appendChild(h('tr', { class: 'row' }, [
+        h('td', {}, h('b', { text: r.maskVersion }), r.maskVersion === mask.current ? [' ', h('span', { class: 'tag tag-ok', text: '现行' })] : null),
+        h('td', { class: 'nowrap', text: r.createdAt || '—' }),
+        h('td', { text: r.createdBy }),
+        h('td', { text: ruleText }),
+        h('td', { text: textOf(r.note) }),
+        h('td', { class: 'mono', text: String(r.batchCount) })
+      ]));
+    });
+
+    c.appendChild(h('div', { class: 'card' }, [
+      h('div', { class: 'card-head' }, [
+        h('h2', { text: '脱敏规则（现行 ' + mask.current + '）' }),
+        h('span', { class: 'sub', text: '别名替换后内部仍可按规则版本对齐核查；规则只增不改，改动留痕' })
+      ]),
+      h('div', { class: 'card-body' }, [
+        maskForm,
+        h('div', { class: 'btn-row' }, [saveMaskBtn]),
+        h('div', { class: 'section-note', text: '说明：「替换为别名」按规则盐值单向生成，同一版本下同一对象别名固定；「剔除」的字段不出现在导出文件里。' })
+      ]),
+      h('div', { class: 'table-wrap' }, h('table', { id: 'tableMaskRules' }, [
+        h('thead', {}, h('tr', {}, [
+          h('th', { text: '版本' }), h('th', { text: '改动时刻' }), h('th', { text: '操作人' }),
+          h('th', { text: '规则内容' }), h('th', { text: '改动说明' }), h('th', { text: '引用批次数' })
+        ])),
+        maskHistoryTb
       ]))
     ]));
   }
